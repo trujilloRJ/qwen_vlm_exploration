@@ -1,0 +1,26 @@
+[project]
+name = "cosmos-sft"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "datasets>=4.8.5",
+    "transformers>=5.8.0",
+    "torch",
+    "torchvision",
+    "dotenv>=0.9.9",
+    "ipykernel>=7.2.0",
+    "opencv-python>=4.13.0.92",
+    "matplotlib>=3.10.9",
+    "accelerate>=1.13.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130" }]
+torchvision = [{ index = "pytorch-cu130" }]
