@@ -1,110 +1,68 @@
-import os
-import glob
-
-from datasets import load_dataset
-from dotenv import load_dotenv
-import torch
-import tqdm
-from transformers import AutoModelForImageTextToText, AutoProcessor
 import json
+import os
+import re
+from typing import TypedDict
 
-load_dotenv()
-
-def format_message(question: str, image, prompt: str = "Answer briefly") -> list:
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": f"{prompt}: {question}"}
-            ]
-        }
-    ]
-    return messages
+import tqdm
 
 
-def load_model_and_processor(model_id: str):
-    model = AutoModelForImageTextToText.from_pretrained(
-        model_id,
-        device_map="auto",
-        torch_dtype=torch.bfloat16,
-    )
-    processor = AutoProcessor.from_pretrained(model_id)
-    return model, processor
+class TextvqaAnswer(TypedDict):
+    question_id: int
+    question: str
+    answers: list[str]
+    predicted_answer: str
 
 
-def load_data_from_disk(dataset_path: str, files_regex: str, split_name: str = "validation"):
-    files = glob.glob(os.path.join(dataset_path, "**", "*.arrow"), recursive=True)
-    val_files = [f for f in files if files_regex in f]
-    data = load_dataset(
-        "arrow",
-        data_files={split_name: val_files},
-        split=split_name,
-    )
-    return data
+def clean_text(text):
+    return re.sub(r'[^\w\s]', '', text.lower().strip())
 
 
-def load_data_from_hf(dataset_name: str = "lmms-lab/textvqa", split: str = "validation"):
-    data = load_dataset(dataset_name, split=split, streaming=True)
-    return data
-
-
-def generate_and_decode(model, processor, inputs):
-    with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=100, pad_token_id=processor.tokenizer.eos_token_id)
-        # Trim out the prompt tokens to decode only the predictions
-        generated_ids_trimmed = [
-            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-        output_text = processor.batch_decode(
-            generated_ids_trimmed, 
-            skip_special_tokens=True, 
-            clean_up_tokenization_spaces=False
-        )[0]
-    return output_text
+def calculate_vqa_score(prediction, answers: list[str]) -> float:
+    """
+    Calculates the official soft VQA evaluation metric.
+    Expects both prediction and ground_truth_list elements to be pre-cleaned.
+    """
+    # Count how many humans provided the exact same answer as the model
+    matching_human_count = answers.count(prediction)
+    
+    # Apply the official formula: min(matching_count / 3, 1.0)
+    score = min(matching_human_count / 3.0, 1.0)
+    return score
 
 
 if __name__ == "__main__":
-    model_id = "Qwen/Qwen3.5-0.8B"
-    LOCAL = False
-    prompt = "Answer briefly based on the image"
-    n_samples = 3
+    model_name = "Qwen3.5-2B"
+    dataset_name = "textvqa"
+    res_folder = r"C:\jtr\side_projects\LLMs\qwen_vlm_exploration\_results"
+    
+    results_path = os.path.join(res_folder, model_name, f"{dataset_name}.json")
+    with open(results_path, "r") as f:
+        predictions: list[TextvqaAnswer] = json.load(f)
 
-    model, processor = load_model_and_processor(model_id)
-
-    if LOCAL:
-        dataset_path = os.getenv("TEXTVQA_DATA_PATH")
-        if not dataset_path:
-            raise ValueError("Please set the TEXTVQA_DATA_PATH environment variable to the path of the TextVQA dataset.")
-        data = load_data_from_disk(dataset_path, "validation-00000")
-    else:
-        data = load_data_from_hf()
-
-    pbar = tqdm.tqdm(data, total=n_samples, desc="Processing samples...")
+    n_samples = len(predictions)
     results = []
-    for i, sample in enumerate(pbar):
-        if n_samples is not None and i >= n_samples:
-            break
-        messages = format_message(sample["question"], sample["image"], prompt=prompt)
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        inputs = processor(
-            text=[text],
-            images=sample["image"],
-            padding=True,
-            return_tensors="pt"
-        ).to("cuda")
+    for result in tqdm.tqdm(predictions, desc="Evaluating...", total=n_samples):
+        answers = result["answers"]
+        predicted_answer = result["predicted_answer"]
 
-        output_text = generate_and_decode(model, processor, inputs)
+        clean_prediction = clean_text(predicted_answer)
+        clean_answers = [clean_text(ans) for ans in answers]
+        score = calculate_vqa_score(clean_prediction, clean_answers)
+
         results.append({
-            "question_id": sample["question_id"],
-            "question": sample["question"],
-            "answers": sample["answers"],
-            "predicted_answer": output_text,
+            "question_id": result["question_id"],
+            "question": result["question"],
+            "score": score
         })
 
-    # save results to a json file
-    out_path = os.path.join("_results", model_id.split("/")[1], "textvqa.json")
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=4)
+    # Calculate the average score
+    average_score = sum(r["score"] for r in results) / n_samples
+    print(f"Average VQA Score: {average_score:.4f}")
 
+    # Save metrics
+    out_path = os.path.join("_results", model_name, f"{dataset_name}_metrics.json")
+    with open(out_path, "w") as f: 
+        json.dump({
+            "average_score": average_score,
+            "per_question_scores": results
+        }, f, indent=4)
