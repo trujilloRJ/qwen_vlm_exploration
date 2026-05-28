@@ -31,7 +31,7 @@ def calculate_vqa_score(prediction, answers: list[str]) -> float:
 
 
 if __name__ == "__main__":
-    model_name = "Qwen3.5-2B"
+    model_name = "Qwen3.5-2B_SFT"
     dataset_name = "textvqa"
     res_folder = r"C:\jtr\side_projects\LLMs\qwen_vlm_exploration\_results"
     
